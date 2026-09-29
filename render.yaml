@@ -1,0 +1,32 @@
+# Render Blueprint – deploys seoudi-pim (Docker) + managed PostgreSQL.
+# Render dashboard → New → Blueprint → select this repository.
+services:
+  - type: web
+    name: seoudi-pim
+    runtime: docker
+    rootDir: seoudi-pim
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seoudi-pim-db
+          property: connectionString
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SESSION_TTL_HOURS
+        value: "12"
+      - key: SEED_DEMO_DATA          # loads demo data on first start only (empty DB)
+        value: "true"
+      - key: DEMO_PASSWORD           # password for all demo accounts – read it in the service's Environment tab
+        generateValue: true
+
+databases:
+  - name: seoudi-pim-db
+    plan: free
+    region: frankfurt
+    databaseName: seoudi_pim
+    user: pim

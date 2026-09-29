@@ -30,7 +30,7 @@ interface SourceProduct {
   visibility: string | null;
 }
 
-const DEMO_PASSWORD = "Seoudi@2026";
+const DEMO_PASSWORD = process.env.DEMO_PASSWORD || "Seoudi@2026";
 
 const USERS: { email: string; name: string; role: Role }[] = [
   { email: "admin@seoudi.local", name: "Admin", role: "ADMIN" },

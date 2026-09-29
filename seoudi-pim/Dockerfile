@@ -26,4 +26,4 @@ COPY --from=build --chown=node:node /app/scripts ./scripts
 COPY --from=build --chown=node:node /app/src/lib ./src/lib
 USER node
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node server.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && if [ \"$SEED_DEMO_DATA\" = \"true\" ]; then npx tsx scripts/seed-if-empty.ts; fi && node server.js"]
