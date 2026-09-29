@@ -1,0 +1,594 @@
+// Seoudi PIM – PostgreSQL schema.
+// SKU is the business identifier; `id` (cuid) is the technical key.
+// Core Magento-facing fields are columns; everything else is EAV
+// (AttributeDefinition / AttributeSet / ProductAttributeValue).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ECOMMERCE_SPECIALIST
+  CONTENT_CREATOR
+  CONTENT_QUALITY
+  VIEWER
+}
+
+enum WorkflowStatus {
+  NEW_IN_RMS
+  RMS_QA
+  READY_FOR_CONTENT
+  CONTENT_IN_PROGRESS
+  AWAITING_IMAGES
+  READY_FOR_QC
+  QC_IN_PROGRESS
+  QC_APPROVED
+  READY_FOR_MAGENTO
+  MAGENTO_LINKED
+  LIVE
+  FINAL_REVIEW
+  COMPLETED
+  QC_REJECTED
+  NEEDS_EDIT
+  BLOCKED
+  MISSING_DATA
+  MISSING_IMAGES
+  PROCUREMENT_FOLLOW_UP
+}
+
+enum ImageStatus {
+  NOT_REQUESTED
+  REQUESTED
+  IN_PHOTOGRAPHY
+  AVAILABLE
+  REJECTED
+  MISSING
+  READY
+}
+
+enum QcOutcome {
+  PASS
+  WARNING
+  ERROR
+  NEEDS_REVIEW
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum AttributeType {
+  TEXT
+  NUMBER
+  DROPDOWN
+  MULTISELECT
+  BOOLEAN
+  DATE
+}
+
+enum SizeKind {
+  WEIGHT
+  VOLUME
+  COUNT
+  LENGTH
+  AREA
+  POWER
+  OTHER
+}
+
+enum ImageRole {
+  MAIN
+  ADDITIONAL
+}
+
+enum AuditSource {
+  UI
+  IMPORT
+  SYSTEM
+  WORKFLOW
+  QC
+  BULK
+  EXPORT
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  role         Role      @default(VIEWER)
+  passwordHash String
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastLoginAt  DateTime?
+
+  sessions        Session[]
+  ownedProducts   Product[]    @relation("ProductOwner")
+  qcProducts      Product[]    @relation("ProductQcReviewer")
+  comments        Comment[]    @relation("CommentAuthor")
+  resolvedComments Comment[]   @relation("CommentResolver")
+  mentions        Mention[]
+  auditLogs       AuditLog[]
+  qcReviews       QcReview[]
+  qcFlags         QcFlag[]     @relation("FlagCreator")
+  savedViews      SavedView[]
+  importBatches   ImportBatch[]
+}
+
+model Session {
+  id        String   @id // sha256 of the opaque cookie token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userAgent String?
+
+  @@index([userId])
+}
+
+model Brand {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  nameAr    String?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
+model Category {
+  id         String     @id @default(cuid())
+  name       String
+  nameAr     String?
+  parentId   String?
+  parent     Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children   Category[] @relation("CategoryTree")
+  path       String     @unique // "Food Cupboard/Rice" (without "Default Category")
+  depth      Int        @default(0)
+  magentoId  Int?
+  active     Boolean    @default(true)
+  sortOrder  Int        @default(0)
+  attributeSetId String?
+  attributeSet   AttributeSet? @relation(fields: [attributeSetId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  primaryProducts   Product[]          @relation("PrimaryCategory")
+  productLinks      ProductCategory[]
+  attributes        CategoryAttribute[]
+
+  @@index([parentId])
+}
+
+model AttributeDefinition {
+  id          String        @id @default(cuid())
+  code        String        @unique
+  label       String
+  labelAr     String?
+  type        AttributeType
+  options     Json?         // [{value,label,labelAr}] for DROPDOWN / MULTISELECT
+  unit        String?
+  localized   Boolean       @default(false) // separate EN/AR values
+  group       String        @default("Specifications")
+  magentoCode String?       // exported inside additional_attributes when set
+  helpText    String?
+  validation  Json?         // {min,max,maxLength,pattern}
+  active      Boolean       @default(true)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  setItems        AttributeSetItem[]
+  categoryLinks   CategoryAttribute[]
+  values          ProductAttributeValue[]
+}
+
+model AttributeSet {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  magentoCode String    @default("Default")
+  description String?
+  createdAt   DateTime  @default(now())
+
+  items      AttributeSetItem[]
+  products   Product[]
+  categories Category[]
+}
+
+model AttributeSetItem {
+  id             String              @id @default(cuid())
+  attributeSetId String
+  attributeSet   AttributeSet        @relation(fields: [attributeSetId], references: [id], onDelete: Cascade)
+  attributeId    String
+  attribute      AttributeDefinition @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  required       Boolean             @default(false)
+  sortOrder      Int                 @default(0)
+
+  @@unique([attributeSetId, attributeId])
+}
+
+model CategoryAttribute {
+  id          String              @id @default(cuid())
+  categoryId  String
+  category    Category            @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  attributeId String
+  attribute   AttributeDefinition @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  required    Boolean             @default(true)
+
+  @@unique([categoryId, attributeId])
+}
+
+model Product {
+  id        String @id @default(cuid())
+  sku       String @unique
+  barcode   String?
+  rmsName   String?
+  rmsBrand  String?
+  rmsCategory String?
+
+  brandId     String?
+  brand       Brand?    @relation(fields: [brandId], references: [id])
+  productLine String?
+  productType String?   // business type, e.g. "Honey", "Lunch Box"
+
+  nameEn            String?
+  nameAr            String?
+  descriptionEn     String?
+  descriptionAr     String?
+  shortDescriptionEn String?
+  shortDescriptionAr String?
+  volumeWeightEn    String?  // customer-facing size text (Magento volume_or_weight, default store)
+  volumeWeightAr    String?  // Arabic store view
+
+  // Structured size
+  sizeKind    SizeKind?
+  sizeValue   Float?     // per-item amount in sizeUnit
+  sizeUnit    String?    // canonical unit: g, kg, ml, l, pc, cm, m, w
+  packCount   Int?       // number of items in a pack (Pack of 12, 10 x 250 g)
+  packExpression String? // raw pack expression "700+700 g", "5+1"
+  weightKg    Float?     // Magento physical weight – never auto-derived from volume
+  dimensions  String?
+  model       String?
+  color       String?
+  flavor      String?
+  variant     String?
+  origin      String?
+
+  primaryCategoryId String?
+  primaryCategory   Category? @relation("PrimaryCategory", fields: [primaryCategoryId], references: [id])
+  categories        ProductCategory[]
+  attributeSetId    String?
+  attributeSet      AttributeSet? @relation(fields: [attributeSetId], references: [id])
+
+  // Magento
+  storeViewCode     String   @default("default")
+  magentoProductType String  @default("simple")
+  attributeSetCode  String   @default("Default")
+  visibility        String   @default("Catalog, Search")
+  productOnline     Boolean  @default(false)
+  metaTitleEn       String?
+  metaTitleAr       String?
+  metaDescriptionEn String?
+  metaDescriptionAr String?
+  urlKey            String?
+  relatedSkus       String[] @default([])
+  crosssellSkus     String[] @default([])
+  upsellSkus        String[] @default([])
+  additionalAttributes String?
+  magentoId         Int?
+  magentoLinkedAt   DateTime?
+
+  // Workflow & operations
+  status          WorkflowStatus @default(NEW_IN_RMS)
+  previousStatus  WorkflowStatus?
+  statusChangedAt DateTime       @default(now())
+  imageStatus     ImageStatus    @default(NOT_REQUESTED)
+  qcOutcome       QcOutcome?
+  qcScore         Int?
+  qcCheckedAt     DateTime?
+  qcIssues        Json?          // latest automated QC issues [{rule, field, outcome, message}]
+  completeness    Int            @default(0)
+  missingFields   String[]       @default([])
+  priority        Priority       @default(NORMAL)
+  campaign        String?
+  dueDate         DateTime?
+  ownerId         String?
+  owner           User?          @relation("ProductOwner", fields: [ownerId], references: [id])
+  qcReviewerId    String?
+  qcReviewer      User?          @relation("ProductQcReviewer", fields: [qcReviewerId], references: [id])
+  notes           String?
+  liveAt          DateTime?
+  completedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attributeValues  ProductAttributeValue[]
+  images           ProductImage[]
+  rmsSnapshots     RmsSnapshot[]
+  magentoSnapshots MagentoSnapshot[]
+  comments         Comment[]
+  qcReviews        QcReview[]
+  qcFlags          QcFlag[]
+  auditLogs        AuditLog[]
+
+  @@index([status])
+  @@index([ownerId])
+  @@index([brandId])
+  @@index([primaryCategoryId])
+  @@index([barcode])
+  @@index([urlKey])
+  @@index([dueDate])
+}
+
+model ProductCategory {
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([productId, categoryId])
+}
+
+model ProductAttributeValue {
+  id          String              @id @default(cuid())
+  productId   String
+  product     Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attributeId String
+  attribute   AttributeDefinition @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  locale      String              @default("all") // all | en | ar
+  valueText   String?
+  valueNumber Float?
+  valueBool   Boolean?
+  valueDate   DateTime?
+  valueJson   Json?               // MULTISELECT arrays
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([productId, attributeId, locale])
+}
+
+model ProductImage {
+  id        String      @id @default(cuid())
+  productId String
+  product   Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String?
+  role      ImageRole   @default(ADDITIONAL)
+  status    ImageStatus @default(REQUESTED)
+  sortOrder Int         @default(0)
+  altEn     String?
+  altAr     String?
+  notes     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([productId])
+}
+
+model RmsSnapshot {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  importBatchId String?
+  data          Json
+  hash          String
+  createdAt     DateTime @default(now())
+
+  @@index([productId, createdAt])
+}
+
+model MagentoSnapshot {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storeViewCode String
+  data          Json
+  source        String   @default("import") // import | export
+  createdAt     DateTime @default(now())
+
+  @@index([productId, storeViewCode, createdAt])
+}
+
+model Comment {
+  id           String    @id @default(cuid())
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fieldKey     String?   // field-level comment, e.g. "nameEn"
+  body         String
+  authorId     String
+  author       User      @relation("CommentAuthor", fields: [authorId], references: [id])
+  parentId     String?
+  parent       Comment?  @relation("CommentThread", fields: [parentId], references: [id])
+  replies      Comment[] @relation("CommentThread")
+  resolved     Boolean   @default(false)
+  resolvedById String?
+  resolvedBy   User?     @relation("CommentResolver", fields: [resolvedById], references: [id])
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  mentions     Mention[]
+
+  @@index([productId])
+}
+
+model Mention {
+  id        String   @id @default(cuid())
+  commentId String
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  seen      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, seen])
+}
+
+model QcReview {
+  id         String    @id @default(cuid())
+  productId  String
+  product    Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  reviewerId String
+  reviewer   User      @relation(fields: [reviewerId], references: [id])
+  decision   String    // APPROVED | REJECTED | NEEDS_EDIT | SUSPECTED
+  outcome    QcOutcome
+  score      Int?
+  checklist  Json?     // {itemCode: boolean}
+  ruleResults Json?    // snapshot of automated QC results at decision time
+  notes      String?
+  createdAt  DateTime  @default(now())
+
+  @@index([productId])
+}
+
+model QcFlag {
+  id          String    @id @default(cuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fieldKey    String
+  message     String
+  severity    QcOutcome @default(ERROR)
+  suspected   Boolean   @default(false)
+  resolved    Boolean   @default(false)
+  resolvedAt  DateTime?
+  createdById String
+  createdBy   User      @relation("FlagCreator", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@index([productId, resolved])
+}
+
+model QcRule {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  description String?
+  severity    QcOutcome @default(WARNING)
+  fields      String[]  @default([])
+  config      Json?
+  active      Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+}
+
+model CompletenessRule {
+  id             String          @id @default(cuid())
+  stage          String          // CONTENT | QC | MAGENTO | LIVE  (cumulative)
+  fieldKey       String          // core field key or "attr:<code>"
+  label          String
+  categoryId     String?         // restrict to a category subtree
+  attributeSetId String?
+  active         Boolean         @default(true)
+
+  @@unique([stage, fieldKey, categoryId, attributeSetId])
+}
+
+model WorkflowTransitionRule {
+  id             String   @id @default(cuid())
+  fromStatus     String   // WorkflowStatus or "*" (any active status)
+  toStatus       String   // WorkflowStatus or "@previous"
+  label          String
+  allowedRoles   Role[]
+  validations    String[] @default([])
+  reasonRequired Boolean  @default(false)
+  active         Boolean  @default(true)
+  sortOrder      Int      @default(0)
+
+  @@unique([fromStatus, toStatus])
+}
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  entityType String      // Product | Category | AttributeDefinition | User | Setting | ...
+  entityId   String
+  productId  String?
+  product    Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+  actorId    String?
+  actor      User?       @relation(fields: [actorId], references: [id])
+  action     String      // CREATE | UPDATE | STATUS_CHANGE | QC_DECISION | IMPORT | ...
+  field      String?
+  oldValue   String?
+  newValue   String?
+  source     AuditSource @default(UI)
+  reason     String?
+  createdAt  DateTime    @default(now())
+
+  @@index([entityType, entityId])
+  @@index([productId, createdAt])
+  @@index([createdAt])
+}
+
+model ImportBatch {
+  id          String      @id @default(cuid())
+  fileName    String
+  kind        String      // RMS | CONTENT | MAGENTO | CATEGORY
+  status      String      @default("UPLOADED") // UPLOADED | MAPPED | VALIDATED | IMPORTED | FAILED
+  headers     String[]    @default([])
+  mapping     Json?
+  sheetName   String?
+  totalRows   Int         @default(0)
+  createdRows Int         @default(0)
+  updatedRows Int         @default(0)
+  skippedRows Int         @default(0)
+  errorRows   Int         @default(0)
+  warningRows Int         @default(0)
+  createdById String
+  createdBy   User        @relation(fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
+  completedAt DateTime?
+  rows        ImportRow[]
+}
+
+model ImportRow {
+  id        String      @id @default(cuid())
+  batchId   String
+  batch     ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  rowNumber Int
+  sku       String?
+  raw       Json
+  action    String?     // CREATE | UPDATE | UNCHANGED | CONFLICT | SKIP | ERROR
+  errors    String[]    @default([])
+  warnings  String[]    @default([])
+  diff      Json?
+
+  @@index([batchId, rowNumber])
+}
+
+model ExportProfile {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  name          String
+  kind          String   // PRODUCT | CATEGORY
+  storeViewCode String?
+  locale        String   @default("en")
+  columns       Json     // [{header, source}]
+  options       Json?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model SavedView {
+  id        String   @id @default(cuid())
+  name      String
+  ownerId   String?
+  owner     User?    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  query     String   // URL search string for /products
+  columns   String[] @default([])
+  shared    Boolean  @default(false)
+  isSystem  Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

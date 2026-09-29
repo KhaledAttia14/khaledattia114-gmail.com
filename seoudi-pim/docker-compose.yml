@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pim
+      POSTGRES_PASSWORD: pim
+      POSTGRES_DB: seoudi_pim
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pim -d seoudi_pim"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://pim:pim@db:5432/seoudi_pim?schema=public
+      SESSION_TTL_HOURS: "12"
+      COOKIE_SECURE: "false"
+    ports: ["3000:3000"]
+    volumes: [uploads:/data/uploads]
+    profiles: ["app"]
+
+volumes:
+  pgdata:
+  uploads:
